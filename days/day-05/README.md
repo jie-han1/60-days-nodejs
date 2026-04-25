@@ -57,11 +57,14 @@
 5. **Check**：执行 `setImmediate` 回调
 6. **Close Callbacks**：执行关闭事件的回调
 
-**微任务在阶段之间执行**：
+**微任务在回调之后执行**：
 
 ```
-Timer 阶段 → [清空微任务] → Pending 阶段 → [清空微任务] → ... → Check 阶段 → [清空微任务] → ...
+Timer 回调 → [清空 nextTick 队列] → [清空 Promise/queueMicrotask 队列] → 下一个回调 → ...
 ```
+
+> Node 11+ 之后，微任务的清空时机更接近浏览器：每个 JS 回调执行完都会进入一次 microtask checkpoint。
+> 旧版 Node 中，很多资料会描述为“每个阶段结束后清空微任务”，这是偏旧版本的简化说法。
 
 ### 3. process.nextTick vs setImmediate vs setTimeout
 
@@ -104,11 +107,17 @@ fs.readFile('./package.json', () => {
 // setTimeout      ← check 之后回到 timer
 ```
 
-**优先级总结：**
+**顺序总结：**
 
 ```
-同步代码 > process.nextTick > Promise.then > setTimeout/setInterval > setImmediate > I/O
+同步代码
+→ microtask checkpoint：process.nextTick 通常先于 Promise.then / queueMicrotask
+→ 事件循环阶段：timers / poll / check / close callbacks，具体顺序取决于所处阶段和调度位置
 ```
+
+> 注意：`process.nextTick` 的“更高优先级”不是所有场景都绝对成立。
+> 例如 ESM 顶层代码已经运行在微任务上下文中，Promise/queueMicrotask 可能先于 `nextTick`；
+> 在 Promise 回调内部注册的 `nextTick`，也不会插队到当前 Promise 链的下一个 `.then()` 之前。
 
 ### 4. process.nextTick 的特殊性
 

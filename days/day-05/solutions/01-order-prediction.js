@@ -7,8 +7,8 @@
 //   nextTick2
 //   nextTick3          ← nextTick2 内部嵌套的 nextTick，在当前 nextTick 队列末尾追加
 //   promise1
-//   nextTick inside promise   ← promise1.then 内注册的 nextTick，在下一个微任务前执行
 //   promise2
+//   nextTick inside promise   ← Promise 回调内注册的 nextTick，会等当前 Promise 微任务队列清空后执行
 //   timeout1
 //   timeout2
 //   immediate1
