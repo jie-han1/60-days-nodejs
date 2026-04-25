@@ -136,7 +136,7 @@ console.log('PATH:', process.env.PATH);
 // 运行: node process-demo.js --name=Node --version=20
 console.log('argv:', process.argv);
 // argv[0] = node 路径
-// argv[1] = 脚本路径
+// argv[1] = 脚本路径（REPL 中无此项）
 // argv[2+] = 自定义参数
 
 // 3. 标准 I/O
