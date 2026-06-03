@@ -1,0 +1,91 @@
+// ============================================================================
+// blog-api schema —— Day 27：把内存版 blog-api 接到真 PostgreSQL
+// ----------------------------------------------------------------------------
+// 与 blog-prisma 的关键区别：
+//   - blog-prisma：手写 schema 映射 blog-db 的 SQL 表，db pull，不跑 migrate
+//     （SQL 是真相，Prisma 只是查询客户端）
+//   - blog-api（这里）：Prisma 是 schema 的"唯一真相"，用 prisma migrate 建表
+//     （应用自己拥有数据模型，没有外部 SQL 迁移）
+//
+// 因为 blog-api 现在只管 Post 这一个聚合（用户 / 鉴权要等阶段三 Day 31+），
+// 所以这里只建一张 posts 表，且字段严格对齐领域实体 src/posts/entities/post.entity.ts：
+// 这样 Service / Controller / DTO / 测试一行都不用改。
+//
+// 注释里标 ★ 的是值得记住的写法关键点。
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  // ★ 复用 blog-db 起的同一个 PG 实例，但用独立的 schema=blog_api，
+  //   和 blog-db 的 public schema（那套 7 张表）物理隔离，互不干扰。
+}
+
+// ----------------------------------------------------------------------------
+// Post —— 对齐领域实体，不多不少
+// ----------------------------------------------------------------------------
+model Post {
+  // ★ uuid() 默认生成 v4，正好配合 Controller 的 ParseUUIDPipe({ version: '4' })
+  id      String @id @default(uuid()) @db.Uuid
+  title   String @db.VarChar(200)
+  slug    String @unique @db.VarChar(120)
+  content String @db.Text
+
+  // ★ PG 原生数组 text[]：领域里 tags 就是 string[]，不必单开一张标签表。
+  //   查询用 { tags: { has: 'nestjs' } } → SQL 的 'nestjs' = ANY(tags)
+  tags String[] @default([])
+
+  // ★ status 用 VarChar 不用 Prisma enum：和 blog-db 的取舍一致——
+  //   enum 改起来要改 DDL，VarChar + 应用层 DTO 白名单（draft/published/archived）更灵活
+  status String @default("draft") @db.VarChar(20)
+
+  // ★ 可空 JSONB 存 SEO meta（seoTitle / seoDescription）。
+  //   读出来类型是 Prisma.JsonValue，进业务前最好二次校验（见 Day 26 §JSON 警告）
+  meta Json? @db.JsonB
+
+  // ★ Timestamptz(3) = 毫秒精度。Day 28 起 /posts/feed 默认按 createdAt 做游标分页，
+  //   而 JS Date 只有毫秒精度。把列也定成毫秒，PG 存的、Prisma 读的、游标编的三者
+  //   完全一致，游标 keyset 不会因为微秒被截断而漏行（详见 Day 28 README §6）。
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  // ★ Day 29 —— 乐观锁版本号。每次成功 update 自增 1；带 expectedVersion 的更新用
+  //   WHERE version = ? 检测"读后被别人改过"，命中 0 行即版本冲突（见 Day 29 README §5）。
+  version Int @default(1)
+
+  // ★ Day 29 —— 浏览计数。自增是可交换操作，用原子 { increment: 1 } 即可，
+  //   不需要乐观锁 / 行锁（对比上面 version 那种任意字段的"读-改-写"）。
+  viewCount Int @default(0) @map("view_count")
+
+  // ★ Day 29 —— 修订历史。每次 update 在同一事务里快照一条，体现事务原子性。
+  revisions PostRevision[]
+
+  // ★ 列表接口最常见的排序是"按状态过滤 + 按时间倒序"，给它一个联合索引
+  @@index([status, createdAt])
+  @@map("posts")
+}
+
+// ----------------------------------------------------------------------------
+// PostRevision —— Day 29：文章修订快照
+// ----------------------------------------------------------------------------
+// 每次 update 成功，在同一个事务里写一条快照。它和 posts 的版本自增必须"要么都成、
+// 要么都不成"——这就是引入这张表的目的：给 blog-api 一个真实的多写事务场景。
+model PostRevision {
+  id        String   @id @default(uuid()) @db.Uuid
+  postId    String   @map("post_id") @db.Uuid
+  version   Int // 这条快照对应的 post 版本号
+  title     String   @db.VarChar(200)
+  content   String   @db.Text
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  // 同一篇文章每个版本至多一条快照；删文章级联删修订
+  @@unique([postId, version])
+  @@index([postId, createdAt])
+  @@map("post_revisions")
+}
