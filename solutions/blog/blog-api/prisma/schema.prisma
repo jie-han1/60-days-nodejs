@@ -64,8 +64,14 @@ model Post {
   // ★ Day 29 —— 修订历史。每次 update 在同一事务里快照一条，体现事务原子性。
   revisions PostRevision[]
 
+  // ★ Day 33 —— 作者，资源级权限的 "owner"。可空：迁移前建的老文章无作者，视为"无主"
+  //   只有 admin 能改；删用户时把文章 author 置空（SetNull），不级联删文章。
+  authorId String? @map("author_id") @db.Uuid
+  author   User?   @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
   // ★ 列表接口最常见的排序是"按状态过滤 + 按时间倒序"，给它一个联合索引
   @@index([status, createdAt])
+  @@index([authorId])
   @@map("posts")
 }
 
@@ -88,4 +94,47 @@ model PostRevision {
   @@unique([postId, version])
   @@index([postId, createdAt])
   @@map("post_revisions")
+}
+
+// ----------------------------------------------------------------------------
+// User —— Day 32：注册 / 登录
+// ----------------------------------------------------------------------------
+model User {
+  id       String @id @default(uuid()) @db.Uuid
+  email    String @unique @db.VarChar(255)
+  username String @unique @db.VarChar(50)
+  // ★ 只存 bcrypt 哈希（60 字符），永远不存明文。VarChar(255) 给将来换 argon2 留余量。
+  // Day 34：可空——纯第三方（GitHub）登录的用户没有密码。
+  password String? @db.VarChar(255)
+  // ★ Day 34：GitHub 用户数字 id（存成字符串）。绑定后用它定位用户；唯一。
+  githubId String? @unique @map("github_id") @db.VarChar(32)
+  // role 为 Day 33 RBAC 预留；默认 user
+  role      String   @default("user") @db.VarChar(20)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  refreshTokens RefreshToken[]
+  posts         Post[] // Day 33：用户写的文章
+
+  @@map("users")
+}
+
+// ----------------------------------------------------------------------------
+// RefreshToken —— Day 32：可撤销的刷新令牌（呼应 Day 31「JWT access + 可撤销 refresh」）
+// ----------------------------------------------------------------------------
+// access token 是无状态 JWT（不入库）；refresh token 是不透明随机串，这里**只存它的
+// sha256 哈希**——数据库泄露也拿不到可用的 refresh（和"只存密码哈希"同理）。
+// 登出 / 轮换时把对应行 revokedAt 置上，即可即时作废。
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash") @db.VarChar(64) // sha256 hex = 64 字符
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(3)
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
 }
